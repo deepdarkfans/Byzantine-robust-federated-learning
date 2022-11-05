@@ -2,17 +2,18 @@ from audioop import avg
 import copy
 import math
 from functools import reduce
-
+from sklearn.cluster import AgglomerativeClustering,KMeans
 import numpy as np
 import sklearn.metrics.pairwise as smp
 import torch
+from numpy import inf
 from loguru import logger
 from sklearn.decomposition import PCA
 import hdbscan
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_distances,euclidean_distances
 from utils.agg_methods import average_weights, average_weights_rep, average_weights_edge
-
+from utils import torch_utils
 eps = np.finfo(float).eps
 
 
@@ -208,7 +209,105 @@ def ClusterGlobelVector(updates,net_glob):
     return global_score
 
 #
+def Clippedclustering(updates):
+    tau = 1e5
+    l2norm_his = []
+    updates = [torch.nn.utils.parameters_to_vector(update.parameters()) for update in updates]
+    l2norms = [torch.norm(update).item() for update in updates]
+    l2norm_his.extend(l2norms)
+    threshold = np.median(l2norm_his)
+    threshold = min(threshold, tau)
 
+    # print(threshold, l2norms)
+    for idx, l2 in enumerate(l2norms):
+        if l2 > threshold:
+            updates[idx] = torch_utils.clip_tensor_norm_(updates[idx], threshold)
+
+    num = len(updates)
+    dis_max = np.zeros((num, num))
+    for i in range(num):
+        for j in range(i + 1, num):
+            dis_max[i, j] = 1 - torch.nn.functional.cosine_similarity(
+                updates[i], updates[j], dim=0
+            )
+            dis_max[j, i] = dis_max[i, j]
+    dis_max[dis_max == -inf] = 0
+    dis_max[dis_max == inf] = 2
+    dis_max[np.isnan(dis_max)] = 2
+    global_score=np.zeros(len(updates))
+    clustering = AgglomerativeClustering(
+        affinity="precomputed", linkage="average", n_clusters=2
+    )
+    clustering.fit(dis_max)
+
+    flag = 1 if np.sum(clustering.labels_) > num // 2 else 0
+    # cluterss_labels=clustering.labels_
+    # for ind,label in enumerate(cluterss_labels):
+    #     if label != -1:
+    #         global_score[ind]=1 
+    S1_idxs = list(
+        [idx for idx, label in enumerate(clustering.labels_) if label == flag]
+    )
+    selected_idxs = S1_idxs
+    features = []
+    num_para = len(updates[0])
+    for update in updates:
+        feature0 = (update > 0).sum().item() / num_para
+        feature1 = (update < 0).sum().item() / num_para
+        feature2 = (update == 0).sum().item() / num_para
+
+        features.append([feature0, feature1, feature2])
+
+    kmeans = KMeans(n_clusters=2, random_state=0).fit(features)
+
+    flag = 1 if np.sum(kmeans.labels_) > num // 2 else 0
+    S2_idxs = list(
+        [idx for idx, label in enumerate(kmeans.labels_) if label == flag]
+    )
+
+    selected_idxs = list(set(S1_idxs) & set(S2_idxs))
+    for ind in selected_idxs:
+        global_score[ind]=1
+    
+    return global_score
+    
+    
+    
+def SignGuard(updates):
+    num = len(updates)
+    updates = [torch.nn.utils.parameters_to_vector(update.parameters()) for update in updates]
+    l2norms = [torch.norm(update).item() for update in updates]
+    M = np.median(l2norms)
+    L = 0.1
+    R = 3.0
+    # S1 = []
+    S1_idxs = []
+    for idx, (l2norm, update) in enumerate(zip(l2norms, updates)):
+        if l2norm >= L * M and l2norm <= R * M:
+            # S1.append(update)
+            S1_idxs.append(idx)
+
+    features = []
+    num_para = len(updates[0])
+    for update in updates:
+        feature0 = (update > 0).sum().item() / num_para
+        feature1 = (update < 0).sum().item() / num_para
+        feature2 = (update == 0).sum().item() / num_para
+
+        features.append([feature0, feature1, feature2])
+
+    kmeans = KMeans(n_clusters=2, random_state=0).fit(features)
+    print(kmeans)
+    global_score=np.zeros(len(updates))
+    flag = 1 if np.sum(kmeans.labels_) > num // 2 else 0
+    S2_idxs = list(
+        [idx for idx, label in enumerate(kmeans.labels_) if label == flag]
+    )
+
+    inter = list(set(S1_idxs) & set(S2_idxs))
+    for ind in inter:
+        global_score[ind]=1
+    return global_score
 ##################################################################
 def Repeated_Median_Shard(w, w_local):
     SHARD_SIZE = 100000
@@ -422,3 +521,6 @@ def trimmed_mean(w, trim_ratio, w_local):
         w_med[k] = weight
 
     return w_med
+
+
+    

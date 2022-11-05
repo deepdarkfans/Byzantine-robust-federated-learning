@@ -24,7 +24,7 @@ from models.test import test_img_local_all
 import time
 from models.EdgeNode import EdgeNode
 from utils.agg_methods import average_weights, average_weights_rep
-from utils.defense_methods import trimmed_mean, Krum, simple_median, Repeated_Median_Shard, FLDefender, FoolsGold, Ours,ClusterLocalVector,ClusterGlobelVector,ClusterAVG
+from utils.defense_methods import trimmed_mean, Krum, simple_median, Repeated_Median_Shard, FLDefender, FoolsGold,ClusterAVG,Clippedclustering,SignGuard
 
 if __name__ == '__main__':
     # parse args
@@ -238,6 +238,12 @@ if __name__ == '__main__':
 
         elif args.rule == 'fedavg':
             w_glob = average_weights(local_weights, [1 for i in range(len(local_weights))])
+        elif args.rule=='clip':
+            value=Clippedclustering(local_models)
+            w_glob = average_weights(local_weights, value)
+        elif args.rule=='signg':
+            value=SignGuard(local_models)
+            w_glob = average_weights(local_weights, value)
         elif args.rule == 'median': 
             w_glob, w_local_dict = simple_median(local_weights, w_local_dict)
         elif args.rule == 'rmedian':
